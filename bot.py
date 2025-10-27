@@ -11,8 +11,8 @@ import sys
 
 # -------- CONFIG ----------
 DATABASE = os.environ.get("LINKBOT_DB", "links.db")
-BOT_TOKEN = os.environ.get("DISCORD_TOKEN")  
-GUILD_ID = os.environ.get("GUILD_ID")  
+BOT_TOKEN = os.environ.get("DISCORD_TOKEN")  # <-- must be set in env
+GUILD_ID = os.environ.get("GUILD_ID")  # optional: restrict commands to a guild for faster registration
 # --------------------------
 
 if not BOT_TOKEN:
@@ -20,15 +20,15 @@ if not BOT_TOKEN:
     sys.exit(1)
 
 intents = discord.Intents.default()
-intents.message_content = False  # not needed for slash commands
+intents.message_content = False  # not needed for slash commands in this bot
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 # helper: URL validation (basic)
 URL_REGEX = re.compile(
-    r'^(https?:\/\/)?'              
-    r'([A-Za-z0-9-]+\.)+[A-Za-z]{2,}'  
-    r'(:\d+)?'                     
-    r'(\/\S*)?$'                    
+    r'^(https?:\/\/)?'              # http:// or https:// (optional)
+    r'([A-Za-z0-9-]+\.)+[A-Za-z]{2,}'  # domain...
+    r'(:\d+)?'                      # optional port
+    r'(\/\S*)?$'                    # optional path
 )
 
 def is_valid_url(url: str) -> bool:
@@ -36,11 +36,12 @@ def is_valid_url(url: str) -> bool:
         parsed = urlparse(url)
         if parsed.scheme and parsed.netloc:
             return True
+        # allow urls without scheme like example.com
         return bool(URL_REGEX.match(url))
     except Exception:
         return False
 
-
+# Database setup
 async def init_db():
     async with aiosqlite.connect(DATABASE) as db:
         await db.execute("""
@@ -58,19 +59,39 @@ async def init_db():
 
 @bot.event
 async def on_ready():
+    # initialize DB
     await init_db()
+
+    # set bot presence (status + activity)
+    try:
+        await bot.change_presence(
+            activity=discord.Activity(
+                type=discord.ActivityType.watching,  # .playing / .listening / .watching
+                name="saved links 📚"
+            ),
+            status=discord.Status.online
+        )
+    except Exception as pres_ex:
+        print("Warning: failed to set presence:", pres_ex)
+
+    # register commands (guild or global)
     if GUILD_ID:
         try:
             guild = discord.Object(id=int(GUILD_ID))
+            # copy global commands to guild for faster registration during development
             bot.tree.copy_global_to(guild=guild)
             await bot.tree.sync(guild=guild)
             print(f"Slash commands synced to guild {GUILD_ID}")
         except Exception as e:
             print("Failed to sync guild commands:", e)
     else:
-        # global sync (can take up to 1 hour to appear)
-        await bot.tree.sync()
-        print("Global slash commands synced.")
+        # global sync (can take up to an hour to appear)
+        try:
+            await bot.tree.sync()
+            print("Global slash commands synced.")
+        except Exception as e:
+            print("Failed to sync global commands:", e)
+
     print(f"Logged in as {bot.user} (ID: {bot.user.id})")
 
 # -------- Slash commands --------
@@ -97,7 +118,6 @@ async def link_save(interaction: discord.Interaction, url: str, title: str = Non
         )
         await db.commit()
         rowid = cur.lastrowid
-
 
     main_label = title if title else url
 
@@ -185,6 +205,7 @@ async def link_remove(interaction: discord.Interaction, id: int):
             return
         added_by_id, url, title = row
 
+        # permission check
         if interaction.user.id != added_by_id and not interaction.user.guild_permissions.manage_messages:
             await interaction.followup.send("Kamu tidak punya izin untuk menghapus link ini. Hanya yang menambahkan atau yang punya `Manage Messages` yang bisa menghapus.", ephemeral=True)
             return
@@ -194,7 +215,9 @@ async def link_remove(interaction: discord.Interaction, id: int):
 
     await interaction.followup.send(f"Link ID `{id}` berhasil dihapus. ({title or url})", ephemeral=True)
 
+# register the group with the bot
 bot.tree.add_command(LINKS)
 
+# Run the bot
 if __name__ == "__main__":
     bot.run(BOT_TOKEN)
